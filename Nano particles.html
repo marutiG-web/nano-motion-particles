@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Gesture 3D Particle System</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+        /* Hidden video element for MediaPipe tracking */
+        #webcam {
+            display: none;
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            width: 160px;
+            height: 120px;
+            z-index: 10;
+            transform: scaleX(-1); /* Mirror view */
+            border: 2px solid #333;
+            border-radius: 4px;
+        }
+        #ui-overlay {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 10;
+            color: white;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+            pointer-events: none;
+        }
+        #title-banner {
+            margin: 0 0 12px 0;
+            font-size: 2rem;
+            font-weight: 900;
+            letter-spacing: 0.35rem;
+            text-transform: uppercase;
+            color: transparent;
+            background: linear-gradient(135deg, #00ffcc, #8c00ff, #00d4ff);
+            -webkit-background-clip: text;
+            background-clip: text;
+            text-shadow: 0 0 18px rgba(0, 255, 204, 0.6), 0 0 32px rgba(140, 0, 255, 0.25);
+            display: inline-block;
+        }
+        #title-banner span {
+            display: inline-block;
+            animation: nano-glow 3s ease-in-out infinite;
+        }
+        @keyframes nano-glow {
+            0%, 100% { text-shadow: 0 0 18px rgba(0, 255, 204, 0.6), 0 0 26px rgba(0, 255, 255, 0.25); }
+            50% { text-shadow: 0 0 26px rgba(255, 255, 255, 0.9), 0 0 38px rgba(0, 255, 255, 0.35); }
+        }
+        h1 { margin: 0 0 5px 0; font-size: 1.5rem; letter-spacing: 1px; color: #00ffcc; }
+        .status { font-size: 0.9rem; color: #888; }
+        .mode-badge {
+            display: inline-block;
+            padding: 5px 10px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 20px;
+            margin-top: 10px;
+            font-weight: bold;
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+    </style>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <div id="canvas-container"></div>
+    <video id="webcam" autoplay playsinline></video>
+    
+    <div id="ui-overlay">
+        <div id="title-banner">NANO <span>MOTION</span></div>
+        <h1>GESTURE PARTICLE ENGINE</h1>
+        <div class="status" id="loading-status">Initializing Camera & Hand Tracking...</div>
+        <div class="mode-badge" id="current-shape">Shape: Galaxy</div>
+        <div class="mode-badge" id="current-gesture" style="background: rgba(0, 255, 204, 0.2); border-color: #00ffcc;">Gesture: Detecting...</div>
+    </div>
+
+    <script>
+        // --- 1. GLOBAL VARIABLES & CONFIG ---
+        const PARTICLE_COUNT = 15000;
+        let scene, camera, renderer, particleGeometry, particleMaterial, particleSystem;
+        let positions = new Float32Array(PARTICLE_COUNT * 3);
+        let targetPositions = new Float32Array(PARTICLE_COUNT * 3);
+        let velocities = new Float32Array(PARTICLE_COUNT * 3);
+        let colors = new Float32Array(PARTICLE_COUNT * 3);
+
+        let currentShapeIndex = 0;
+        const shapes = ['GALAXY', 'HEART', 'FLOWER', 'SATURN', 'FIREWORKS'];
+        
+        // Interaction states controlled by gestures
+        let expansionFactor = 1.0;
+        let globalHue = 0.5;
+        let targetExpansion = 1.0;
+        let morphSpeed = 0.05;
+
+        // --- 2. THREE.JS INITIALIZATION ---
+        function initThree() {
+            const container = document.getElementById('canvas-container');
+            
+            scene = new THREE.Scene();
+            scene.fog = new THREE.FogExp2(0x000000, 0.015);
+
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 45;
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            container.appendChild(renderer.domElement);
+
+            generateShape(shapes[currentShapeIndex], targetPositions);
+            // Copy target immediately to initial positions
+            for(let i=0; i<PARTICLE_COUNT * 3; i++) {
+                positions[i] = targetPositions[i];
+                velocities[i] = (Math.random() - 0.5) * 0.1;
+            }
+
+            particleGeometry = new THREE.BufferGeometry();
+            particleGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            particleGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+            // High performance circular particle using canvas texture
+            particleMaterial = new THREE.PointsMaterial({
+                size: 0.35,
+                vertexColors: true,
+                transparent: true,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false,
+                map: createParticleTexture()
+            });
+
+            particleSystem = new THREE.Points(particleGeometry, particleMaterial);
+            scene.add(particleSystem);
+
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function createParticleTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 32;
+            canvas.height = 32;
+            const ctx = canvas.getContext('2d');
+            const gradient = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+            gradient.addColorStop(0, 'rgba(255,255,255,1)');
+            gradient.addColorStop(0.2, 'rgba(0,255,255,0.8)');
+            gradient.addColorStop(1, 'rgba(0,0,0,0)');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, 32, 32);
+            return new THREE.CanvasTexture(canvas);
+        }
+
+        // --- 3. MATHEMATICAL SHAPE TEMPLATES ---
+        function generateShape(shapeType, arrayToPopulate) {
+            let p = new THREE.Vector3();
+            const colorAttr = colors;
+
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                const i3 = i * 3;
+                
+                switch (shapeType) {
+                    case 'GALAXY':
+                        const angle = (i / PARTICLE_COUNT) * Math.PI * 2 * 6; 
+                        const radius = (i / PARTICLE_COUNT) * 20 + Math.random() * 2;
+                        p.set(Math.cos(angle) * radius, (Math.random() - 0.5) * 2, Math.sin(angle) * radius);
+                        break;
+
+                    case 'HEART':
+                        const t = Math.PI * 2 * (i / PARTICLE_COUNT);
+                        // Parametric equation for a 3D Heart
+                        p.x = 16 * Math.pow(Math.sin(t), 3) * 0.9;
+                        p.y = (13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t)) * 0.9;
+                        p.z = (Math.random() - 0.5) * 6 * Math.sin(t);
+                        break;
+
+                    case 'FLOWER':
+                        const phi = Math.acos(-1 + (2 * i) / PARTICLE_COUNT);
+                        const theta = Math.sqrt(PARTICLE_COUNT * Math.PI) * phi;
+                        const r = 12 * (1 + 0.3 * Math.sin(6 * theta)); // 6 petals
+                        p.setFromSphericalCoords(r, phi, theta);
+                        break;
+
+                    case 'SATURN':
+                        if (i < PARTICLE_COUNT * 0.3) {
+                            // Core Sphere
+                            const u = Math.random();
+                            const v = Math.random();
+                            const thetaCore = u * 2.0 * Math.PI;
+                            const phiCore = Math.acos(2.0 * v - 1.0);
+                            p.setFromSphericalCoords(7, phiCore, thetaCore);
+                        } else {
+                            // Rings
+                            const ringRadius = 11 + Math.random() * 9;
+                            const ringAngle = Math.random() * Math.PI * 2;
+                            p.set(Math.cos(ringAngle) * ringRadius, (Math.random() - 0.5) * 0.5, Math.sin(ringAngle) * ringRadius);
+                            // Tilt the rings slightly
+                            p.applyAxisAngle(new THREE.Vector3(1, 0, 1).normalize(), 0.4);
+                        }
+                        break;
+
+                    case 'FIREWORKS':
+                        const speed = 5 + Math.random() * 15;
+                        const fireTheta = Math.random() * Math.PI * 2;
+                        const firePhi = Math.acos((Math.random() * 2) - 1);
+                        p.setFromSphericalCoords(speed, firePhi, fireTheta);
+                        break;
+                }
+
+                arrayToPopulate[i3] = p.x;
+                arrayToPopulate[i3 + 1] = p.y;
+                arrayToPopulate[i3 + 2] = p.z;
+            }
+        }
+
+        // --- 4. ANIMATION LOOP ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const posAttr = particleGeometry.attributes.position;
+            const colorAttr = particleGeometry.attributes.color;
+            
+            // Smoothly interpolate expansion factor based on gesture feedback
+            expansionFactor += (targetExpansion - expansionFactor) * 0.1;
+            
+            // Temporary Color tracking
+            let c = new THREE.Color();
+
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                const i3 = i * 3;
+
+                // Morphing mechanism: Move current position toward target shape position
+                let tx = targetPositions[i3] * expansionFactor;
+                let ty = targetPositions[i3 + 1] * expansionFactor;
+                let tz = targetPositions[i3 + 2] * expansionFactor;
+
+                // Physics Accentuation for Fireworks
+                if (shapes[currentShapeIndex] === 'FIREWORKS') {
+                    // Simulate continuous outward velocity vector decay
+                    positions[i3] += (tx - positions[i3]) * 0.02 + velocities[i3];
+                    positions[i3+1] += (ty - positions[i3+1]) * 0.02 + velocities[i3+1];
+                    positions[i3+2] += (tz - positions[i3+2]) * 0.02 + velocities[i3+2];
+                } else {
+                    // Standard smooth geometric morph
+                    positions[i3] += (tx - positions[i3]) * morphSpeed;
+                    positions[i3 + 1] += (ty - positions[i3 + 1]) * morphSpeed;
+                    positions[i3 + 2] += (tz - positions[i3 + 2]) * morphSpeed;
+                }
+
+                // Dynamic Color Updating based on hand depth/gesture state
+                const hue = (globalHue + (i / PARTICLE_COUNT) * 0.2) % 1.0;
+                c.setHSL(hue, 0.8, 0.5);
+                colors[i3] = c.r;
+                colors[i3 + 1] = c.g;
+                colors[i3 + 2] = c.b;
+            }
+
+            posAttr.needsUpdate = true;
+            colorAttr.needsUpdate = true;
+
+            // Subtle continuous drift rotation
+            particleSystem.rotation.y += 0.002;
+            particleSystem.rotation.x += 0.0005;
+
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // --- 5. MEDIAPIPE GESTURE TRACKING & PARSING ---
+        const videoElement = document.getElementById('webcam');
+        const statusText = document.getElementById('loading-status');
+        const shapeBadge = document.getElementById('current-shape');
+        const gestureBadge = document.getElementById('current-gesture');
+
+        let lastShapeToggleTime = 0;
+
+        function onResults(results) {
+            if (statusText.style.display !== 'none') {
+                statusText.innerText = "Camera Active - Wave your Hand!";
+                videoElement.style.display = "block"; // Show micro-preview
+            }
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+
+                // Extract Key Landmarks for Tracking Calculations
+                const wrist = landmarks[0];
+                const thumbTip = landmarks[4];
+                const indexTip = landmarks[8];
+                const middleTip = landmarks[12];
+                const ringTip = landmarks[16];
+                const pinkyTip = landmarks[20];
+
+                // 1. Scene Position Follow: Map Hand Coordinates directly to Particle Position
+                // Inverting X axis to match natural mirrored webcam feedback
+                particleSystem.position.x = -(wrist.x - 0.5) * 60;
+                particleSystem.position.y = -(wrist.y - 0.5) * 40;
+
+                // 2. Color Shifting: Maps hand depth (Z axis coordinate approximation) to Color Hue
+                globalHue = Math.abs(wrist.z * 2.5) % 1.0;
+
+                // 3. Gesture Classification Engine
+                // Compute distances between fingers and palm base to decipher intent
+                const getDistance = (p1, p2) => Math.hypot(p1.x - p2.x, p1.y - p2.y, p1.z - p2.z);
+                
+                const indexSpread = getDistance(indexTip, wrist);
+                const middleSpread = getDistance(middleTip, wrist);
+                const ringSpread = getDistance(ringTip, wrist);
+                const pinkySpread = getDistance(pinkyTip, wrist);
+                const pinchDistance = getDistance(thumbTip, indexTip);
+
+                const isFist = indexSpread < 0.25 && middleSpread < 0.25 && ringSpread < 0.25;
+                const isOpenHand = indexSpread > 0.45 && middleSpread > 0.45 && ringSpread > 0.45;
+                const isPinch = pinchDistance < 0.04;
+
+                // Action Execution Loop
+                if (isFist) {
+                    gestureBadge.innerText = "Gesture: FIST (Attract)";
+                    targetExpansion = 0.25; // Crunch particles together
+                    morphSpeed = 0.08;
+                } else if (isOpenHand) {
+                    gestureBadge.innerText = "Gesture: OPEN PALM (Expand)";
+                    targetExpansion = 2.2;  // Push particles far apart
+                    morphSpeed = 0.04;
+                } else {
+                    gestureBadge.innerText = "Gesture: Neutral Tracking";
+                    targetExpansion = 1.0;   // Equilibrium size
+                    morphSpeed = 0.05;
+                }
+
+                // Template Switching Trigger via explicit Pinch Gesture
+                // Enforce a cool-down block to avoid hyper-cycling frames
+                const currentTime = Date.now();
+                if (isPinch && (currentTime - lastShapeToggleTime > 1200)) {
+                    currentShapeIndex = (currentShapeIndex + 1) % shapes.length;
+                    
+                    // Setup randomized physics explosion vector if cycling into Fireworks
+                    if(shapes[currentShapeIndex] === 'FIREWORKS') {
+                        for(let i=0; i<PARTICLE_COUNT*3; i++) {
+                            velocities[i] = (Math.random() - 0.5) * 0.4;
+                        }
+                    }
+
+                    generateShape(shapes[currentShapeIndex], targetPositions);
+                    shapeBadge.innerText = `Shape: ${shapes[currentShapeIndex]}`;
+                    lastShapeToggleTime = currentTime;
+                    
+                    // Visual flashing cue on UI
+                    shapeBadge.style.background = "#00ffcc";
+                    shapeBadge.style.color = "#000";
+                    setTimeout(() => {
+                        shapeBadge.style.background = "rgba(255,255,255,0.1)";
+                        shapeBadge.style.color = "#fff";
+                    }, 300);
+                }
+            } else {
+                // Return to base default behavior state if tracking breaks or hand leaves frame
+                gestureBadge.innerText = "Gesture: Hand Not Detected";
+                targetExpansion = 1.0;
+                // Slowly float back to origin screen center point
+                particleSystem.position.x += (0 - particleSystem.position.x) * 0.05;
+                particleSystem.position.y += (0 - particleSystem.position.y) * 0.05;
+            }
+        }
+
+        // --- 6. PARALLEL SYSTEM ENGINES LAUNCH ---
+        initThree();
+        animate();
+
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.6,
+            minTrackingConfidence: 0.6
+        });
+
+        hands.onResults(onResults);
+
+        const cameraFeed = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({ image: videoElement });
+            },
+            width: 640,
+            height: 480
+        });
+        
+        cameraFeed.start()
+            .then(() => {
+                statusText.innerText = "Camera connected. Align hand to interact.";
+            })
+            .catch(err => {
+                statusText.innerText = "Error accessing webcam. Fallback mouse/keyboard controls not configured.";
+                console.error(err);
+            });
+
+    </script>
+</body>
+</html>
